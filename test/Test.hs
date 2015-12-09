@@ -5,7 +5,7 @@ module Test where
 import Data.Either
 import Data.Monoid ((<>))
 import Data.Text (Text,unpack)
-import Data.Versioning
+import Data.Versions
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -24,7 +24,7 @@ messes = [ "10.2+0.93+1-1", "003.03-3", "002.000-7", "1:0.10.16-3"
 
 messComps :: [Text]
 messComps = [ "10.2+0.93+1-1", "10.2+0.93+1-2", "10.2+0.93+2-1"
-            , "10.2+0.94+1-1", "10.3+0.93+1-1", "11.2+0.93+1-1"
+            , "10.2+0.94+1-1", "10.3+0.93+1-1", "11.2+0.93+1-1", "12"
             ]
 
 badSemVs :: [Text]
@@ -33,7 +33,7 @@ badSemVs = [ "1", "1.2", "1.2.3+a1b2bc3.1-alpha.2", "a.b.c", "1.01.1"
            ]
 
 goodSemVs :: [Text]
-goodSemVs = [ "1.2.3", "1.2.3-1", "1.2.3-alpha", "1.2.3-alpha.2"
+goodSemVs = [ "0.1.0", "1.2.3", "1.2.3-1", "1.2.3-alpha", "1.2.3-alpha.2"
             , "1.2.3+a1b2c3.1", "1.2.3-alpha.2+a1b2c3.1"
             ]
 
@@ -53,7 +53,7 @@ cabalOrd :: [Text]
 cabalOrd = [ "0.2", "0.2.0", "0.2.0.0" ]
 
 versionOrd :: [Text]
-versionOrd = [ "0.9.9.9", "1.0.0.0", "1.0.0.1" ]
+versionOrd = [ "0.9.9.9", "1.0.0.0", "1.0.0.1", "2" ]
 
 suite :: TestTree
 suite = testGroup "Unit Tests"
@@ -70,10 +70,11 @@ suite = testGroup "Unit Tests"
     ]
   , testGroup "(General) Versions"
     [ testGroup "Good Versions" $
-      map (\s -> testCase (unpack s) $ isomorph s) goodVers
+      map (\s -> testCase (unpack s) $ isomorphV s) goodVers
     , testGroup "Comparisons" $
-      map (\(a,b) -> testCase (unpack $ a <> " < " <> b) $ comp version a b) $
-      zip cabalOrd (tail cabalOrd) <> zip versionOrd (tail versionOrd)
+      testCase "1.2-5 < 1.2.3-1" (comp version "1.2-5" "1.2.3-1") :
+      map (\(a,b) -> testCase (unpack $ a <> " < " <> b) $ comp version a b)
+      (zip cabalOrd (tail cabalOrd) <> zip versionOrd (tail versionOrd))
     ]
   , testGroup "(Complex) Mess"
     [ testGroup "Good Versions" $
@@ -82,11 +83,37 @@ suite = testGroup "Unit Tests"
       map (\(a,b) -> testCase (unpack $ a <> " < " <> b) $ comp mess a b) $
       zip messComps (tail messComps)
     ]
+  , testGroup "Mixed Versioning" $
+    [ testGroup "Identification" $
+      [ testCase "1.2.3 is SemVer" $ check $ isSemVer <$> parseV "1.2.3"
+      , testCase "1.2.3-1 is SemVer" $ check $ isSemVer <$> parseV "1.2.3-1"
+      , testCase "1.2.3-1+1 is SemVer" $ check $ isSemVer <$> parseV "1.2.3-1+1"
+      , testCase "1.2.3r1 is Version" $ check $ isVersion <$> parseV "1.2.3r1"
+      , testCase "0.25-2 is Version" $ check $ isVersion <$> parseV "0.25-2" 
+      , testCase "1.2.3+1-1 is Mess" $ check $ isMess <$> parseV "1.2.3+1-1"
+      , testCase "1:1.2.3-1 is Mess" $ check $ isMess <$> parseV "1:1.2.3-1"
+      , testCase "000.007-1 is Mess" $ check $ isMess <$> parseV "000.007-1"
+      , testCase "20.26.1_0-2 is Mess" $ check $ isMess <$> parseV "20.26.1_0-2"
+      ]
+    , testGroup "Isomorphisms" $
+      map (\s -> testCase (unpack s) $ isomorph s) $ goodSemVs ++ goodVers ++ messes
+    , testGroup "Comparisons" $
+      [ testCase "1.2.2r1-1 < 1.2.3-1"   $ comp parseV "1.2.2r1-1" "1.2.3-1"
+      , testCase "1.2.3-1   < 1.2.4r1-1" $ comp parseV "1.2.3-1" "1.2.4r1-1"
+      , testCase "1.2.3-1   < 2+0007-1"  $ comp parseV "1.2.3-1" "2+0007-1"
+      , testCase "1.2.3r1-1 < 2+0007-1"  $ comp parseV "1.2.3r1-1" "2+0007-1"
+      , testCase "1.2-5 < 1.2.3-1"       $ comp parseV "1.2-5" "1.2.3-1"
+      ]
+    ]
   ]
 
--- | Does pretty-printing return a Version to its original form?
+-- | Does pretty-printing return a Versioning to its original form?
 isomorph :: Text -> Assertion
-isomorph t = Right t @=? (prettyVer <$> version t)
+isomorph t = Right t @=? (prettyV <$> parseV t)
+
+-- | Does pretty-printing return a Version to its original form?
+isomorphV :: Text -> Assertion
+isomorphV t = Right t @=? (prettyVer <$> version t)
 
 -- | Does pretty-printing return a SemVer to its original form?
 isomorphSV :: Text -> Assertion
@@ -96,7 +123,23 @@ isomorphM :: Text -> Assertion
 isomorphM t =  Right t @=? (prettyMess <$> mess t)
 
 comp :: Ord b => (Text -> Either a b) -> Text -> Text -> Assertion
-comp f a b = assert $ either (const False) id $ (<) <$> f a <*> f b
+comp f a b = check $ (<) <$> f a <*> f b
+
+check :: Either a Bool -> Assertion
+check = assert . either (const False) id
+
+isSemVer :: Versioning -> Bool
+isSemVer (Ideal _) = True
+isSemVer _ = False
+
+isVersion :: Versioning -> Bool
+isVersion (General _) = True
+isVersion _ = False
+
+isMess :: Versioning -> Bool
+isMess (Complex _) = True
+isMess _ = False
+
 
 {-}
 -- Need to submit patch for these, as well as Maybe instance.
